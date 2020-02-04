@@ -1,0 +1,362 @@
+---
+title: "BCB420 A1"
+author: "Fanxing Bu"
+date: "Feb 4 2020"
+output:
+  html_document:
+    df_print: paged
+---
+**Note**: Some codes adapted from the lecture silds written by Ruth Isserlin.
+
+# Launching RStudio in Docker
+```
+docker run -e PASSWORD=1234 --rm -p 8787:8787 -v /Users/bfx/Documents/BCB420:/home/rstudio/docker_bcb420 risserlin/bcb420-base-image
+```
+
+# Find dataset of interest
+I used GEOmetadb to find the dataset of interest.
+
+
+<br />
+```{r message=FALSE, warning=FALSE}
+# install GEOmetadb
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+if (!requireNamespace("GEOmetadb", quietly = TRUE))
+    BiocManager::install("GEOmetadb")
+
+library(GEOmetadb)
+library(knitr)
+library(edgeR)
+library(limma)
+
+```
+
+#### Set up GEOmetadb
+```{r}
+# get GEO meta data database
+if(!file.exists('GEOmetadb.sqlite')) getSQLiteFile()
+
+#Check the version info
+file.info('GEOmetadb.sqlite')
+
+#connect to the GEO meta data database
+con <- dbConnect(SQLite(),'GEOmetadb.sqlite')
+
+# check out the tables that are available
+geo_tables <- dbListTables(con)
+geo_tables
+
+```
+
+<br />
+
+#### Looking for the dataset of interest
+```{r eval=FALSE}
+# create sql query to find the series that 
+# submission_date later than '2015-01-01' 
+# title include human and HiSeq
+# organism contains Homo sapiens
+# to ensure the series are new, RNA-seq, about human 
+sql <- paste("SELECT DISTINCT gse.title,gse.gse, gpl.title,",
+             " gse.submission_date,",
+             " gse.supplementary_file",
+             "FROM",
+             "  gse JOIN gse_gpl ON gse_gpl.gse=gse.gse",
+             "  JOIN gpl ON gse_gpl.gpl=gpl.gpl",
+             "WHERE",
+             "  gse.submission_date > '2015-01-01' AND",
+             "  gse.title LIKE '%human%' AND", 
+             "  gpl.organism LIKE '%Homo sapiens%' AND",
+             "  gpl.title LIKE '%HiSeq%' ",
+             "  ORDER BY gse.submission_date DESC",sep=" ")
+
+rs <- dbGetQuery(con,sql)
+
+# break the file names up and just get the actual file name
+unlist(lapply(rs$supplementary_file,
+              FUN = function(x){x <- unlist(strsplit(x,";")) ;
+              x <- x[grep(x,pattern="txt",ignore.case = TRUE)];
+                tail(unlist(strsplit(x,"/")),n=1)}))[1:10]
+
+# to find the series have processed data in supplementary file.
+counts_files <- rs$supplementary_file[grep(rs$supplementary_file,
+                              pattern = "count",ignore.case = TRUE)]
+
+
+```
+<br />
+I choose [GSE111958: Transcriptional profile of human STAT1-/- fibroblasts expressing LY6E or empty control vector](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111958)
+
+#### Download the dataset
+```{r}
+sfiles = getGEOSuppFiles('GSE111958')
+
+fnames = rownames(sfiles)
+
+myData = read.delim(fnames[1],header=TRUE)
+```
+<br/>Preview my data, and everything looks good.
+```{r}
+head(myData)
+```
+
+# Processing the data
+\
+#### Data Exploration
+
+##### Get Description of my dataset 
+```{r message=FALSE}
+gse <- getGEO("GSE111958",GSEMatrix=FALSE)
+kable(data.frame(head(Meta(gse))), format = "html")
+```
+<br />
+
+##### Get Platform information
+```{r message=FALSE, warning=FALSE}
+current_gpl <- names(GPLList(gse))[1]
+current_gpl_info <- Meta(getGEO(current_gpl))
+```
+
+**Platform title** : `r current_gpl_info$title `<br />
+**Submission data** : `r current_gpl_info$submission_date`<br />
+**Last update data** : `r current_gpl_info$last_update_date`<br />
+**Organims** : `r current_gpl_info$organism`<br />
+**Number of GEO datasets that use this techology** : `r length(current_gpl_info$series_id)`<br />
+**Number of GEO samples that use this technology** : `r length(current_gpl_info$sample_id)`<br />
+<br />
+
+##### Get Expression Data
+```{r}
+exp <- read.delim(fnames[1],header=TRUE,
+                check.names = FALSE)
+```
+
+```{r}
+dim(exp)
+```
+There are `r nrow(exp)` genes measured and `r ncol(exp) -1` samples \
+
+```{r}
+samples <- data.frame(lapply(colnames(exp)[2:7], 
+        FUN=function(x){unlist(strsplit(x, perl=TRUE, "(?=[A-Za-z])(?<=[0-9])|(?=[0-9])(?<=[A-Za-z])"))}))
+
+colnames(samples) <- colnames(exp)[2:7]
+rownames(samples) <- c("condition", "cell")
+samples <- data.frame(t(samples))
+
+```
+Define the groups, The first 3 character represent the conditions (Empty control or	LY6E)\
+
+#### Mapping to HUGO symbols
+The data already has column called GENE_NAME which is HUGO symbols
+```{r}
+head(exp$GENE_NAME)
+```
+
+Then, I used https://www.genenames.org/tools/multi-symbol-checker/ to check the symbols, all mapped.
+```{r}
+head(HUGO<-read.table("hgnc-symbol-check.csv", header = TRUE, sep = ","))
+```
+
+  
+
+#### Clean Data
+
+
+##### Check duplicates
+```{r}
+summarized_gene_counts <- sort(table(exp$GENE_NAME),decreasing = TRUE)
+
+# find the gene appeared more than 1
+length(summarized_gene_counts[which(summarized_gene_counts>1)])
+```
+There is no duplicates.\
+
+```{r}
+# get rid of low counts
+keep = rowSums(exp[ ,2:7] > 1) >= 3
+exp_filtered = exp[keep,]
+
+
+```
+In edgeR, it is recommended to remove features without at least 1 read per million in n of the samples, where n is the size of the smallest group of replicates. Since the size of my group is 3, I set n=3 here. \
+The origin data has `r nrow(exp)` genes, filtered data has `r nrow(exp_filtered)` genes, `r nrow(exp) - nrow(exp_filtered)` genes have been deleted.
+
+#### Normalization
+##### Preview my data with Boxplot and Density plot
+```{r}
+data2plot <- log2(exp_filtered[,2:7])
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "STAT1-/- fibroblasts Samples")
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 2, lty = "dashed")
+```
+
+```{r}
+
+counts_density <- apply(log2(exp_filtered[,2:7]), 2, density)
+  #calculate the limits across all the samples
+    xlim <- 0; ylim <- 0
+    for (i in 1:length(counts_density)) {
+      xlim <- range(c(xlim, counts_density[[i]]$x)); 
+      ylim <- range(c(ylim, counts_density[[i]]$y))
+    }
+    cols <- rainbow(length(counts_density))
+    ltys <- rep(1, length(counts_density))
+    
+    plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+         ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+    #plot each line
+    for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+    #create legend
+    legend("topright", colnames(data2plot),  
+           col=cols, lty=ltys, cex=0.75, 
+           border ="blue",  text.col = "green4", 
+           merge = TRUE, bg = "gray90")
+```
+
+
+##### Trimmed Mean of M-values
+Since my dataset is sample based and used RNA-Seq, I choose Trimmed Mean of M-values (TMM) to normalize the data. 
+```{r}
+filtered_data_matrix <- as.matrix(exp_filtered[, 2:7])
+rownames(filtered_data_matrix) <- exp_filtered$GENE_NAME
+d <- DGEList(counts=filtered_data_matrix, group=samples$condition)
+d <- calcNormFactors(d)
+normalized_counts <- cpm(d)
+```
+
+
+Boxplot: Origin VS Nomalized
+```{r}
+# my data has already cpm-converted,
+layout(matrix(c(1, 2), ncol = 2))
+# origin
+data2plot <- log2(exp_filtered[,2:7])
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Origin")
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+# normalized
+data2plot <- log2(normalized_counts)
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Normalized")
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+```
+
+
+Density plot: Origin VS Nomalized
+```{r}
+layout(matrix(c(1, 2), ncol = 2))
+
+# origin dataset
+counts_density <- apply(log2(exp_filtered[,2:7]), 2, density)
+  #calculate the limits across all the samples
+    xlim <- 0; ylim <- 0
+    for (i in 1:length(counts_density)) {
+      xlim <- range(c(xlim, counts_density[[i]]$x)); 
+      ylim <- range(c(ylim, counts_density[[i]]$y))
+    }
+    cols <- rainbow(length(counts_density))
+    ltys <- rep(1, length(counts_density))
+    
+    plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+         ylab="Smoothing density of log2-CPM", main="origin", cex.lab = 0.85)
+    #plot each line
+    for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+    #create legend
+    legend("topright", colnames(data2plot),  
+           col=cols, lty=ltys, cex=0.75, 
+           border ="blue",  text.col = "green4", 
+           merge = TRUE, bg = "gray90")
+    
+# normalized
+counts_density <- apply(log2(normalized_counts), 2, density)
+  #calculate the limits across all the samples
+    xlim <- 0; ylim <- 0
+    for (i in 1:length(counts_density)) {
+      xlim <- range(c(xlim, counts_density[[i]]$x)); 
+      ylim <- range(c(ylim, counts_density[[i]]$y))
+    }
+    cols <- rainbow(length(counts_density))
+    ltys <- rep(1, length(counts_density))
+    #plot the first density plot to initialize the plot
+    plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+         ylab="Smoothing density of log2-CPM", main="normalized", cex.lab = 0.85)
+    #plot each line
+    for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+    #create legend
+    legend("topright", colnames(data2plot),  
+           col=cols, lty=ltys, cex=0.75, 
+           border ="blue",  text.col = "green4", 
+           merge = TRUE, bg = "gray90")
+```
+\
+Since the origin dataset is normalized, the plots at here are very similar with each other.
+
+
+##### MDS
+To show the sample separation, I draw a MDS plot post normalization. It shows the samples separated with each other well. Samples in same groups are closer than samples in different groups. It is very obviously that the control and test group are separated. Same cell in each group has similar distance with each other.
+
+```{r}
+plotMDS(d, labels=rownames(samples),
+  col = c("darkgreen","blue")[factor(samples$condition)])
+```
+
+##### Estimate common and tagwise dispersion
+
+```{r}
+model_design <- model.matrix(~samples$condition + samples$cell)
+d <- estimateDisp(d, model_design)
+```
+
+##### BCV plot
+Dispersion is a measure of how much variation there is in samples. This plot seems not right, the number of genes is to less. Possibly, it caused by the scalar, most genes gather together.
+```{r}
+plotBCV(d,col.tagwise = "black",col.common = "red")
+```
+
+##### Mean-variance relationship
+
+```{r}
+plotMeanVar(d, show.raw.vars = TRUE, show.tagwise.vars=TRUE, 
+            show.ave.raw.vars = TRUE,  
+            NBline=TRUE,
+            show.binned.common.disp.vars = TRUE)
+```
+
+#### Questions:
+
+* What are the control and test conditions of the dataset?
+  + Control group is Human STAT1-deficient fibroblasts stably expressing empty control vector in biological triplicate.
+  + Test group is Human STAT1-deficient fibroblasts stably expressing LY6E in biological triplicate.
+  
+* Why is the dataset of interest to you?
+  + This dataset aims to explore whether LY6E enhance viral infectivity or not. Which is helpful for us to understand the mechanism of antiviral immunity. Especially, 2019-nCoV is raging the world now, I want to know more about the viral infection.
+  
+* Were there expression values that were not unique for specific genes? How did you handle these?
+  + No, There is no duplicate
+  
+* Were there expression values that could not be mapped to current HUGO symbols?
+  + No, The data already has column called GENE_NAME which is HUGO symbols, Then, I used https://www.genenames.org/tools/multi-symbol-checker/ to check the symbols, all mapped.
+  
+* How many outliers were removed?
+  + The origin data has `r nrow(exp)` genes, filtered data has `r nrow(exp_filtered)` genes, `r nrow(exp) - nrow(exp_filtered)` genes have been removed.
+  
+* How did you handle replicates?
+  + Divided the 6 samples to 2 groups(empty control, test), each group has 3 replicates. Every sample looks good, so I kept all of them.
+  
+* What is the final coverage of your dataset?
+  + The final coverage is `r nrow(exp_filtered)` genes.
+  
+# Reference
+1. https://ropenscilabs.github.io/r-docker-tutorial/02-Launching-Docker.html \
+2. https://stackoverflow.com/questions/9756360/split-character-data-into-numbers-and-letters \
+3. Mar KB, Rinkenberger NR, Boys IN, Eitson JL et al. LY6E mediates an evolutionarily conserved enhancement of virus infection by targeting a late entry step. Nat Commun 2018 Sep 6;9(1):3603. PMID: 30190477\
+
