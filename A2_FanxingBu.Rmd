@@ -36,7 +36,7 @@ library(dplyr)
 **Note**: Some codes adapted from the lecture silds written by Ruth Isserlin. To compile this markdown file, please include the **data** and **figures** folder and place them at the same directory with this file.
 
 # Introduction
-For this assignment, I used **Transcriptional profile of human STAT1-/- fibroblasts expressing LY6E or empty control vector** data GSE111958 (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111958) which about if LY6E will enhance the infectivity of some viruses[@LY6E_2018]. In assignment 1, I had already cleaned and normalized the data, in this assignment, I will do Differential Gene Expression analysis and Thresholded over-representation analysis. \
+For this assignment, I used **Transcriptional profile of human STAT1-/- fibroblasts expressing LY6E or empty control vector** data [GSE111958](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111958), 11433 genes 6 samples, which about if LY6E will enhance the infectivity of some viruses[@LY6E_2018]. In assignment 1, I had already cleaned and normalized the data, in this assignment, I will do Differential Gene Expression analysis and Thresholded over-representation analysis. \
 Boxplot and density plot from A1  \
 \
 ![](figures/a1_bp.png)
@@ -58,6 +58,13 @@ normalized_count_data <- read.table(file=file.path("data", "GSE111958_finalized_
 kable(normalized_count_data[1:5, ], type="html")
 
 ```
+
+
+The number of genes
+```{r}
+nrow(normalized_count_data)
+```
+
 
 
 # Heatmap
@@ -87,6 +94,7 @@ without_row_normalization_heatmap<- current_heatmap
 ```
 Draw the heatmap directly, we can see that the range of the data is too large and the most value are distributed at low counts, so the whole heatmap is blue and only the top is red. ![heatmap without Row-normalization](figures/without_RN.png) 
 
+## Row-normalization heatmap
 ```{r}
 # Row-normalization
 heatmap_matrix <- t(scale(t(heatmap_matrix)))
@@ -110,6 +118,8 @@ Scale each row and centre the around the mean, so we can narrow down the range o
 
 
 # Differential Gene Expression
+
+## Define Groups
 ```{r}
 empty_samples <- grep(colnames(normalized_count_data),
                           pattern="^SEU")
@@ -137,7 +147,9 @@ LY6E_L_samples
 # It assumes that both stat1_LY6E_samples and stat1_empty_samples are normally distributed.
 t.test(x=t(LY6E_L_samples),y=t(LY6E_empty_samples))
 ```
+There is significant difference between two groups.
 
+### MDSPlot
 Now we can revisit the MDSPlot with limma package 
 ```{r}
 rep_colors <- rainbow(3)
@@ -145,9 +157,8 @@ rep_colors<- rep(rep_colors, 2)
 
 limma::plotMDS(heatmap_matrix, col=rep_colors)
 ```
+\ The first 3 character represent the conditions (Empty control or	LY6E), nicely separated
 
-
-\ Define the groups, The first 3 character represent the conditions (Empty control or	LY6E)
 ```{r}
 samples <- data.frame(lapply(colnames(normalized_count_data)[2:7], 
         FUN=function(x){unlist(strsplit(x, perl=TRUE, "(?=[A-Za-z])(?<=[0-9])|(?=[0-9])(?<=[A-Za-z])"))}))
@@ -159,13 +170,15 @@ samples
 
 ```
 
+## Limma
 
+### Simple
 ```{r}
 model_design <- model.matrix(~ samples$cell_type)
 kable(model_design, type="html")
 ```
 
-## Limma
+
 ```{r}
 # Create data matrix
 expressionMatrix <- as.matrix(normalized_count_data[,2:7])
@@ -207,6 +220,7 @@ length(which(output_hits$P.Value < 0.05))
 length(which(output_hits$adj.P.Val < 0.05))
 ```
 
+### Account for the rep variability
 Account for the rep variability to improve the results
 ```{r}
 model_design_rep <- model.matrix(
@@ -253,6 +267,8 @@ length(which(output_hits_rep$P.Value < 0.05))
 length(which(output_hits_rep$adj.P.Val < 0.05))
 ```
 
+
+### MA plot
 Draw MA plot, The point looks too few, but I checked dim(topfit) which is ```r dim(topfit)```. Seems like the range of the data is too large.
 ```{r}
 differential_expression_results <- topfit[rownames(minimalSet), ]
@@ -275,7 +291,7 @@ limma::plotMD(fit2, column = ncol(fit2), cex = 0.5, status = differential_expres
 ```
 
 
-
+### Compare two models
 Compare the results from two different models
 ```{r}
 simple_model_pvalues <- data.frame(hgnc_symbol = output_hits$hgnc_symbol,
@@ -316,6 +332,7 @@ points(two_models_pvalues[two_models_pvalues$hgnc_symbol==hgnc_symbol_of_interes
 
 ```
 
+### Heatmap with the top hits
 Draw the Heatmap with the top hits using Limma (accounting for rep variability) which only show the p-value < 0.05 and columns ordered by cell type.
 ```{r}
 top_hits <- output_hits_rep$hgnc_symbol[output_hits_rep$P.Value<0.01]
