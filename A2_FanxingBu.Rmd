@@ -12,7 +12,7 @@ bibliography: a2.bib
     
 ---
 
-```{r message=FALSE, warning=FALSE}
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 if (!requireNamespace("GEOmetadb", quietly = TRUE))
@@ -36,7 +36,11 @@ library(dplyr)
 **Note**: Some codes adapted from the lecture silds written by Ruth Isserlin. To compile this markdown file, please include the **data** and **figures** folder and place them at the same directory with this file.
 
 # Introduction
-* GSE111958 [@LY6E_2018]
+For this assignment, I used **Transcriptional profile of human STAT1-/- fibroblasts expressing LY6E or empty control vector** data GSE111958 (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111958) which about if LY6E will enhance the infectivity of some viruses[@LY6E_2018]. In assignment 1, I had already cleaned and normalized the data, in this assignment, I will do Differential Gene Expression analysis and Thresholded over-representation analysis. \
+Boxplot and density plot from A1  \
+\
+![](figures/a1_bp.png)
+![](figures/a1_dp.png)
 
 # Perparation
 ## Launching RStudio in Docker
@@ -249,6 +253,29 @@ length(which(output_hits_rep$P.Value < 0.05))
 length(which(output_hits_rep$adj.P.Val < 0.05))
 ```
 
+Draw MA plot, The point looks too few, but I checked dim(topfit) which is ```r dim(topfit)```. Seems like the range of the data is too large.
+```{r}
+differential_expression_results <- topfit[rownames(minimalSet), ]
+differential_expression_status <- apply(differential_expression_results, 1, function(gene){
+  if (gene["P.Value"] < 0.05) {
+    if (gene["logFC"] < 0 ){
+       return("Downregulated genes")
+    }
+    else{
+      return("Upregulated genes")
+    }
+  } else {
+    return("Not differentially expressed")
+  }
+})
+
+limma::plotMD(fit2, column = ncol(fit2), cex = 0.5, status = differential_expression_status,
+              main = "Differential gene expression")
+
+```
+
+
+
 Compare the results from two different models
 ```{r}
 simple_model_pvalues <- data.frame(hgnc_symbol = output_hits$hgnc_symbol,
@@ -312,7 +339,7 @@ current_heatmap
 
 ```
 
-\ obviously, the heatmap show that the gene expression has significant different for different cell type.
+\ Obviously, the heatmap show that the gene expression has significant different for different cell type.
 
 ## edgeR
 ```{r}
@@ -429,13 +456,7 @@ current_heatmap
 
 \ Also obviously, the heatmap show that the gene expression has significant different for different cell type.
 
-# Thresholded over-representation analysis
-Use [g:profiler](https://biit.cs.ut.ee/gprofiler/gost) for thresholded gene set enrichment analysis. Set **organism** to "Homo sapiens", **significance threshold** to "Benjamini-Hochberg FDR" and **threshold** to "0.05". \ \
-**Data sources**: \
-**GO biological process**: releases/2019-07-01 \
-**Reactome annotations**: ensembl classes: 2019-10-2 \ 
-**WikiPathways**: 20190910 \
-Exprot the genelist for upregulated, downregulated and all differentially expressed genes. Then use these genelist as query separately.
+
 ```{r}
 # Merge gene names with the top hits
 qlf_output_hits_withgn <- merge(normalized_count_data[,1],
@@ -456,6 +477,23 @@ downregulated_genes <- qlf_output_hits_withgn$hgnc_symbol[
 
 all_differentially_expressed_genes <- qlf_output_hits_withgn$hgnc_symbol[
   which(qlf_output_hits_withgn$PValue < 0.05)]
+```
+We can see there are ```r length(all_differentially_expressed_genes)``` differentially expressed genes, the most differential expression are downregulated which is ```r length(downregulated_genes)```, and upregulated genes are only ```r length(upregulated_genes)```.
+
+
+
+# Thresholded over-representation analysis
+Use [g:profiler](https://biit.cs.ut.ee/gprofiler/gost) for thresholded gene set enrichment analysis. Set **organism** to "Homo sapiens", **significance threshold** to "Benjamini-Hochberg FDR" and **threshold** to "0.05". \
+\
+**Data sources**: \
+**GO biological process**: releases/2019-07-01 \
+
+**Reactome annotations**: ensembl classes: 2019-10-2 \
+
+**WikiPathways**: 20190910 \
+
+Exprot the genelist for upregulated, downregulated and all differentially expressed genes. Then use these genelist as query separately.
+```{r}
 
 # Export the genelist to txt file for g:profiler
 write.table(x=upregulated_genes,
@@ -469,23 +507,73 @@ write.table(x=all_differentially_expressed_genes,
             row.names = FALSE,col.names = FALSE,quote = FALSE)
 ```
 
-First, for all differentially expressed genes ![all differentially expressed genes results](figures/all_de_genes_results.png)\
+
+## All differentially expressed genes
+The results of  differentially expressed genes ![all differentially expressed genes results](figures/all_de_genes_results.png)\
 The number of genesets for each data source:\
 GO:BP: 954 \
 REAC: 239 \
 WP: 16 \
-More details for each data source:
+More details for each data source: \
+
+### GO:BP
+the top hit is cellular component organization, the number of genes found in cellular component organization is 276 \
+![all BP](figures/all_BP.png)
+
+### REAC
+the top hit is Axon guidance, the number of gene from query found in Axon guidance is 64 \
+![all REAC](figures/all_REAC.png)
+
+### WP 
+the top hit is Focal Adhesion, the number of gene from query found in Focal Adhesion is 32 \
+![all BP](figures/all_WP.png)
+
+## Upregulated genes
+The results of upregulated genes ![upregulated results](figures/upregulated_results.png) \
+
+The number of genesets for each data source:\
+GO:BP: 83 \
+REAC: 12 \
+WP: 4 \
+More details for each data source: \
 GO:BP \
-![all BP](figures/all_de_genes_BP.png)
-![all BP](figures/all_BP_top10.png)
+![up BP](figures/up_BP.png)
+
+REAC \
+![up REAC](figures/up_REAC.png) \
 
 
+WP \
+![up wp](figures/up_WP.png) \
 
+
+## Downregulated genes
+The results of downregulated genes ![downregulated results](figures/downregulated_results.png) \
+
+The number of genesets for each data source:\
+GO:BP: 918 \
+REAC: 232 \
+WP: 22 \
+More details for each data source: \
+GO:BP \
+
+![down BP](figures/down_BP.png)
+
+REAC \
+![down REAC](figures/down_REAC.png) \
+
+
+WP \
+![down wp](figures/down_WP.png) \
+
+# Interpretation
+For the g:profiler results, the result of downregulated is very similar with the result of all differentially expressed genes. For the whole list, cellular component organization is the top hit and viral process is the third hit in GO:BP which are both related to the infectivity of viruses. The result of upregulated shows that some genes related to cell cycle, Mitochondria and ATP synthesis are upregulated. \
+This support the conclusions discussed in the original paper that LY6E promotes early step of the virus life cycle and enhances infectivity of some viruses. \
+Also I found an article "RLR-mediated antiviral innate immunity requires oxidative phosphorylation activity", published at 2017, said mitochondria is a platform for antiviral innate immunity and antiviral innate immunity requires oxidative phosphorylation (OXPHOS) activity.[@RLR2017] oxidative phosphorylation (OXPHOS) is the top hit for upregulated genelist in GO:BP and lots of genes related to mitochondria differentially expressed. \
+Therefore LY6E must play some important role in early step of the virus life cycle and infectivity of some viruses.
 
 
 
 # Reference
-1. https://ropenscilabs.github.io/r-docker-tutorial/02-Launching-Docker.html \
-2. https://stackoverflow.com/questions/9756360/split-character-data-into-numbers-and-letters \
-3. Mar KB, Rinkenberger NR, Boys IN, Eitson JL et al. LY6E mediates an evolutionarily conserved enhancement of virus infection by targeting a late entry step. Nat Commun 2018 Sep 6;9(1):3603. PMID: 30190477\
+
 
